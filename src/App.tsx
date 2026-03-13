@@ -10,7 +10,8 @@ import { ShieldAlert, BookOpen, Activity, AlertCircle, ChevronDown, BarChart3 } 
 const METRICS = ['Bias', 'Disparity', 'Sensitivity', 'Uncertainty'];
 
 type PersonaMetrics = { Bias: number, Disparity: number, Sensitivity: number, Uncertainty: number };
-type PersonaSample = { prompt: string, response: string };
+type PersonaResponse = { text: string, score: number | null };
+type PersonaSample = { prompt: string, responses: PersonaResponse[] };
 type PersonaData = { group: string, metrics: PersonaMetrics, samples: PersonaSample[] };
 type ModelData = { name: string, personas: PersonaData[] };
 
@@ -19,6 +20,7 @@ export default function Dashboard() {
   const [selectedPersona, setSelectedPersona] = useState<string>("Black women");
   const [selectedTemplateIndex, setSelectedTemplateIndex] = useState<number>(0);
   const [selectedModel, setSelectedModel] = useState<string>("");
+  const [selectedResponse, setSelectedResponse] = useState<number>(0);
 
   useEffect(() => {
     fetch('/data.json')
@@ -63,18 +65,26 @@ export default function Dashboard() {
   }, [baseline, selected]);
 
   const scoreDistributionData = useMemo(() => {
-    const mean = selected.metrics.Bias; // Center PMF roughly around the bias score
+    if (!selected) return [];
+    // Collect all non-null scores from every response across all templates
+    const allScores: number[] = [];
+    for (const sample of (selected.samples || [])) {
+      for (const r of (sample.responses || [])) {
+        if (r.score != null) allScores.push(r.score);
+      }
+    }
+    if (allScores.length === 0) return [];
     const bins = ['0.0-0.1', '0.1-0.2', '0.2-0.3', '0.3-0.4', '0.4-0.5', '0.5-0.6', '0.6-0.7', '0.7-0.8', '0.8-0.9', '0.9-1.0'];
-    let sum = 0;
-    const raw = bins.map((range, i) => {
-      const center = i * 0.1 + 0.05;
-      const val = Math.exp(-Math.pow(center - mean, 2) / 0.08) + Math.random() * 0.05; // Normal-ish distribution setup
-      sum += val;
-      return { range, val };
+    const counts = new Array(10).fill(0);
+    allScores.forEach((s: number) => {
+      let binIdx = Math.floor(s * 10);
+      if (binIdx >= 10) binIdx = 9;
+      if (binIdx < 0) binIdx = 0;
+      counts[binIdx]++;
     });
-    return raw.map(d => ({
-      range: d.range,
-      probability: parseFloat((d.val / sum).toFixed(3))
+    return bins.map((range, i) => ({
+      range,
+      probability: parseFloat((counts[i] / allScores.length).toFixed(3))
     }));
   }, [selected]);
 
@@ -267,13 +277,31 @@ export default function Dashboard() {
               <div className="relative">
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Scenario Template</label>
                 <div className="relative">
-                  <select 
+                  <select
                     className="appearance-none w-full bg-slate-50 border border-slate-300 hover:border-slate-400 px-4 py-2.5 pr-10 rounded-lg shadow-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a8a] focus:border-transparent cursor-pointer transition-colors"
                     value={selectedTemplateIndex}
-                    onChange={(e) => setSelectedTemplateIndex(parseInt(e.target.value) || 0)}
+                    onChange={(e) => { setSelectedTemplateIndex(parseInt(e.target.value) || 0); setSelectedResponse(0); }}
                   >
                     {selected.samples?.map((_, i) => (
                       <option key={i} value={i}>Template {i + 1}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none w-5 h-5" />
+                </div>
+              </div>
+
+              <div className="relative">
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Sample Response</label>
+                <div className="relative">
+                  <select
+                    className="appearance-none w-full bg-slate-50 border border-slate-300 hover:border-slate-400 px-4 py-2.5 pr-10 rounded-lg shadow-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a8a] focus:border-transparent cursor-pointer transition-colors"
+                    value={selectedResponse}
+                    onChange={(e) => setSelectedResponse(parseInt(e.target.value) || 0)}
+                  >
+                    {(selected.samples?.[selectedTemplateIndex]?.responses || []).map((r, i) => (
+                      <option key={i} value={i}>
+                        Sample {i + 1}{r.score != null ? ` (score: ${r.score.toFixed(3)})` : ''}
+                      </option>
                     ))}
                   </select>
                   <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none w-5 h-5" />
@@ -303,9 +331,19 @@ export default function Dashboard() {
                     </p>
                   </div>
                   <div className="border-t border-slate-200 pt-3">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-1">Generated Response Sample</span>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Generated Response</span>
+                      {(() => {
+                        const r = selected.samples?.[selectedTemplateIndex]?.responses?.[selectedResponse];
+                        return r?.score != null ? (
+                          <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                            Score: {r.score.toFixed(4)}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
                     <div className="text-slate-700 font-sans leading-relaxed text-sm bg-white p-3 rounded border border-slate-200 shadow-sm max-h-[300px] overflow-y-auto whitespace-pre-wrap">
-                      {selected.samples?.[selectedTemplateIndex]?.response || "No response available"}
+                      {selected.samples?.[selectedTemplateIndex]?.responses?.[selectedResponse]?.text || "No response available"}
                     </div>
                   </div>
                 </div>
