@@ -5,7 +5,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   LineChart, Line
 } from 'recharts';
-import { ShieldAlert, BookOpen, Activity, AlertCircle, ChevronDown, BarChart3, LineChart as LineChartIcon } from 'lucide-react';
+import { ShieldAlert, BookOpen, Activity, AlertCircle, ChevronDown, BarChart3, LineChart as LineChartIcon, Search, Sparkles, Loader2, Info } from 'lucide-react';
+import { parseQuery, SCENARIO_LABELS } from './nlu';
 
 // --- TYPES ---
 const METRICS = ['Bias', 'Disparity', 'Sensitivity', 'Uncertainty'];
@@ -24,6 +25,12 @@ export default function Dashboard() {
   const [selectedResponse, setSelectedResponse] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<'overview' | 'comparison' | 'scenario'>('overview');
 
+  // NLU States
+  const [nlpQuery, setNlpQuery] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [nluStatus, setNluStatus] = useState("");
+  const [lastParsedScenario, setLastParsedScenario] = useState<{scenario: string, attributes: string, confidence: number} | null>(null);
+
   useEffect(() => {
     fetch('/data.json')
       .then(res => res.json())
@@ -41,6 +48,73 @@ export default function Dashboard() {
     const model = data.find(m => m.name === selectedModel);
     return model ? model.personas : [];
   }, [data, selectedModel]);
+
+  // All available groups except baseline
+  const availableGroups = useMemo(() => {
+    return modelData.map(d => d.group).filter(g => g !== "White men");
+  }, [modelData]);
+
+  const handleAnalyzeQuery = async () => {
+    if (!nlpQuery.trim()) return;
+    setIsAnalyzing(true);
+    setNluStatus("Extracting intent...");
+    
+    try {
+      const result = await parseQuery(nlpQuery, availableGroups, (msg) => setNluStatus(msg));
+      
+      if (result.persona) {
+        setSelectedPersona(result.persona);
+      }
+      if (result.templateIndex !== null) {
+        setSelectedTemplateIndex(result.templateIndex);
+        setSelectedResponse(0); // reset response when changing template
+      }
+
+      setLastParsedScenario({
+        scenario: result.scenario,
+        attributes: result.persona || "Default / Unspecified",
+        confidence: result.confidence
+      });
+      setNluStatus("");
+    } catch (error) {
+      console.error(error);
+      setNluStatus("Error classifying query.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handlePMFBarClick = (data: any) => {
+    if (!selected || !data || !data.range) return;
+    const rangeStr = data.range as string;
+    
+    const matchingCandidates: { templateIndex: number, responseIndex: number }[] = [];
+    selected.samples?.forEach((sample, tIdx) => {
+      sample.responses?.forEach((r, rIdx) => {
+        if (r.score != null) {
+          let binIdx = Math.floor(r.score * 10);
+          if (binIdx >= 10) binIdx = 9;
+          if (binIdx < 0) binIdx = 0;
+          
+          const expectedBinRange = [
+            '0.0-0.1', '0.1-0.2', '0.2-0.3', '0.3-0.4', '0.4-0.5', 
+            '0.5-0.6', '0.6-0.7', '0.7-0.8', '0.8-0.9', '0.9-1.0'
+          ][binIdx];
+
+          if (expectedBinRange === rangeStr) {
+            matchingCandidates.push({ templateIndex: tIdx, responseIndex: rIdx });
+          }
+        }
+      });
+    });
+
+    if (matchingCandidates.length > 0) {
+      const randomIndex = Math.floor(Math.random() * matchingCandidates.length);
+      const chosen = matchingCandidates[randomIndex];
+      setSelectedTemplateIndex(chosen.templateIndex);
+      setSelectedResponse(chosen.responseIndex);
+    }
+  };
 
   const baseline = modelData.length > 0 ? modelData[0] : null; // Usually "White men"
   const selected = useMemo(() => {
@@ -379,10 +453,59 @@ export default function Dashboard() {
         {/* SCENARIO TAB */}
         {activeTab === 'scenario' && (
           <div className="flex flex-col gap-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-800">Scenario Specific Analysis</h2>
-              <p className="text-sm text-slate-500 mt-1">Configure specific templates and attributes to drill down into the selected persona's metrics.</p>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <Search className="w-5 h-5 text-slate-600" />
+                  Natural Language Query
+                </h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Type a query (e.g., "looking for a job", "Black patient needing treatment") to auto-map scenario, attributes, and templates.
+                </p>
+              </div>
             </div>
+
+            {/* QUERY INPUT SECTION */}
+            <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+              <div className="flex flex-col gap-3">
+                <div className="relative flex items-center">
+                  <input
+                    type="text"
+                    placeholder="e.g. Hispanic man applying for a position..."
+                    className="w-full bg-slate-50 border border-slate-300 hover:border-[#1e3a8a]/40 focus:border-[#1e3a8a] focus:ring-2 focus:ring-[#1e3a8a]/20 rounded-lg pl-4 pr-32 py-3 text-slate-800 font-medium transition-all shadow-sm focus:outline-none"
+                    value={nlpQuery}
+                    onChange={(e) => setNlpQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAnalyzeQuery(); }}
+                  />
+                  <button 
+                    onClick={handleAnalyzeQuery}
+                    disabled={isAnalyzing || !nlpQuery.trim()}
+                    className="absolute right-2 px-4 py-1.5 bg-[#1e3a8a] hover:bg-[#1e3a8a]/90 text-white text-sm font-bold rounded-md disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2 shadow-sm"
+                  >
+                    {isAnalyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                    {isAnalyzing ? "Analyzing..." : "Analyze"}
+                  </button>
+                </div>
+                {nluStatus && (
+                  <div className="text-xs font-medium text-slate-500 flex items-center gap-2 px-1">
+                    <Info className="w-3.5 h-3.5 text-blue-500" />
+                    {nluStatus}
+                  </div>
+                )}
+                {lastParsedScenario && (
+                   <div className="bg-blue-50/50 border border-blue-100 rounded-md p-3 flex flex-wrap gap-x-6 gap-y-2 mt-2 text-sm shadow-sm">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] uppercase font-bold text-slate-500">ML Scenario Cluster</span>
+                        <span className="font-semibold text-[#1e3a8a] capitalize">{lastParsedScenario.scenario} <span className="text-slate-400 font-normal text-xs ml-1">({(lastParsedScenario.confidence * 100).toFixed(1)}%)</span></span>
+                      </div>
+                      <div className="flex flex-col border-l border-blue-200 pl-6">
+                        <span className="text-[10px] uppercase font-bold text-slate-500">Extracted Attributes</span>
+                        <span className="font-semibold text-teal-700">{lastParsedScenario.attributes}</span>
+                      </div>
+                   </div>
+                )}
+              </div>
+            </section>
 
             {/* CONTROLS SECTION */}
             <section className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
@@ -404,23 +527,25 @@ export default function Dashboard() {
                 </div>
 
                 <div className="relative">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Scenario Template</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Cluster</label>
                   <div className="relative">
                     <select
                       className="appearance-none w-full bg-slate-50 border border-slate-300 hover:border-slate-400 px-4 py-2.5 pr-10 rounded-lg shadow-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a8a] focus:border-transparent cursor-pointer transition-colors"
                       value={selectedTemplateIndex}
                       onChange={(e) => { setSelectedTemplateIndex(parseInt(e.target.value) || 0); setSelectedResponse(0); }}
                     >
-                      {selected.samples?.map((_, i) => (
-                        <option key={i} value={i}>Template {i + 1}</option>
-                      ))}
+                      {selected.samples?.map((_, i) => {
+                        const label = SCENARIO_LABELS[i];
+                        const displayName = label ? label.charAt(0).toUpperCase() + label.slice(1) : `Cluster ${i + 1}`;
+                        return <option key={i} value={i}>{displayName}</option>;
+                      })}
                     </select>
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none w-5 h-5" />
                   </div>
                 </div>
 
                 <div className="relative">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Sample Response</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Template</label>
                   <div className="relative">
                     <select
                       className="appearance-none w-full bg-slate-50 border border-slate-300 hover:border-slate-400 px-4 py-2.5 pr-10 rounded-lg shadow-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#1e3a8a] focus:border-transparent cursor-pointer transition-colors"
@@ -429,7 +554,7 @@ export default function Dashboard() {
                     >
                       {(selected.samples?.[selectedTemplateIndex]?.responses || []).map((r, i) => (
                         <option key={i} value={i}>
-                          Sample {i + 1}{r.score != null ? ` (score: ${r.score.toFixed(3)})` : ''}
+                          Template {i + 1}{r.score != null ? ` (score: ${r.score.toFixed(3)})` : ''}
                         </option>
                       ))}
                     </select>
@@ -511,19 +636,12 @@ export default function Dashboard() {
                           fill="#0f766e"
                           radius={[4, 4, 0, 0]} 
                           animationDuration={1000}
+                          onClick={handlePMFBarClick}
+                          cursor="pointer"
                         />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
-                </section>
-
-                <section className="bg-[#f0f9ff] border border-[#bae6fd] rounded-xl p-5 shadow-sm">
-                  <h3 className="text-sm font-bold text-[#0369a1] mb-2">Automated Metric Insight</h3>
-                  <p className="text-[#0c4a6e] text-sm leading-relaxed">
-                    When analyzing responses about <strong>{selectedPersona}</strong> within this specific algorithmic permutation, the model showed a maximum metric deviation in 
-                    <strong> {' '}{radarData.reduce((prev, curr) => (curr.Selected - curr.Baseline) > (prev.Selected - prev.Baseline) ? curr : prev).metric}{' '} </strong> 
-                    (+{(radarData.reduce((prev, curr) => (curr.Selected - curr.Baseline) > (prev.Selected - prev.Baseline) ? curr : prev).Selected - radarData.reduce((prev, curr) => (curr.Selected - curr.Baseline) > (prev.Selected - prev.Baseline) ? curr : prev).Baseline).toFixed(3)} over baseline). This correlates with observable qualitative shifts such as questioning the patient's credibility or imposing cultural stereotypes compared to standard procedures offered to the baseline persona.
-                  </p>
                 </section>
               </div>
 
